@@ -1,3 +1,17 @@
+# Ignorar el entorno virtual
+venv/
+
+# Archivos de caché y compilados de Python
+__pycache__/
+*.pyc
+
+# Base de datos local de SQLite (si la usaste en pruebas)
+db.sqlite3
+
+# Variables de entorno (si usas un archivo .env)
+.env
+
+
 # Logs
 logs
 *.log
