@@ -77,9 +77,9 @@ WSGI_APPLICATION = 'trabajot.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'ptdron',
-        'USER': 'PTDron',
+        'USER': 'ptdron',
         'PASSWORD': 'PTDron02.',
         'HOST': '216.225.202.68',
         'PORT': '5432',
