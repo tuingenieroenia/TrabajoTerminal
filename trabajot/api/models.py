@@ -10,6 +10,7 @@ class Usuario(models.Model):
         db_table = 'users'  # Asegura que use la tabla existente
 
 class Dron(models.Model):
+    folio = models.AutoField(primary_key=True)
     controladora_de_vuelo = models.CharField(max_length=255)
     frame = models.CharField(max_length=255)
     helices = models.IntegerField()
