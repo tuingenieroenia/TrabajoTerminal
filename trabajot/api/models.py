@@ -1,4 +1,5 @@
 from django.db import models
+import json
 
 class Usuario(models.Model):
     folio = models.AutoField(primary_key=True)
@@ -20,6 +21,12 @@ class Dron(models.Model):
     telemetria = models.JSONField()
     class Meta:
         db_table = 'dron'
+
+    def save(self, *args, **kwargs):
+        """Convertir telemetría en string JSON antes de guardar."""
+        if isinstance(self.telemetria, dict):
+            self.telemetria = json.dumps(self.telemetria)  # Convertimos dict a string JSON
+        super(Dron, self).save(*args, **kwargs)
 
 class TipoAlerta(models.Model):
     folio = models.AutoField(primary_key=True)
