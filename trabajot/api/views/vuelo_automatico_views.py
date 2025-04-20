@@ -2,8 +2,8 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils import timezone
-from ..models import RutasVuelo
-from ..serializers import RutasVueloSerializer
+from api.models import RutasVuelo
+from api.serializers import RutasVueloSerializer
 import json
 
 # Coordenadas del punto "Home"

@@ -3,8 +3,11 @@ import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from pymavlink import mavutil
 from api.mavlink_connection import get_drone_connection
+from api.drone_commands.manual_control import mover_dron
+from api.drone_commands.mission_manager import enviar_mision, obtener_ruta, establecer_home, validar_estado_para_mision
 
 class TelemetriaConsumer(AsyncWebsocketConsumer):
+    
     async def connect(self):
         """Maneja la conexión WebSocket e inicia la transmisión de telemetría."""
         await self.accept()
@@ -17,6 +20,8 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
 
+        self.movimiento_activo = None
+        self.task_movimiento = None
         self.running = True
         self.telemetry_task = asyncio.create_task(self.enviar_telemetria())
 
@@ -30,18 +35,56 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                 self.test_motores()
             elif command == "armar":
                 self.armar_dron()
+                await asyncio.sleep(5)
+                self.set_modo_guided()
             elif command == "despegar":
                 self.despegar()
             elif command == "regresar_home":
                 self.regresar_home()
             elif command == "aterrizar":
                 self.aterrizar()
+            elif command in ["adelante", "atras", "izquierda", "derecha", "subir", "bajar", "girar_izq", "girar_der"]:
+                self.iniciar_movimiento_continuo(command)
+            elif command == "detener":
+                self.detener_movimiento()
+            elif command == "iniciar_mision":
+                folio_ruta = data.get("folio_ruta", 1)
+                print(f"🧭 Iniciando misión con folio {folio_ruta}...")
+                waypoints = await asyncio.to_thread(obtener_ruta, folio_ruta)
+                if waypoints:
+                    self.total_waypoints = len(waypoints)
+                    self.mision_en_curso = True
+                    await asyncio.gather(
+                        enviar_mision(self.drone, waypoints, 5)
+                    )
+                else:
+                    await self.send(json.dumps({"error": "No se pudo obtener la ruta"}))
 
             await self.send(json.dumps({"status": "Comando ejecutado", "command": command}))
 
         except Exception as e:
             print(f"❌ Error al procesar comando: {e}")
             await self.send(json.dumps({"error": f"Error al ejecutar comando: {str(e)}"}))
+
+    def iniciar_movimiento_continuo(self, direccion):
+        print(f"🔁 Iniciando movimiento continuo: {direccion}")
+        self.movimiento_activo = direccion
+        if self.task_movimiento and not self.task_movimiento.done():
+            self.task_movimiento.cancel()
+
+        self.task_movimiento = asyncio.create_task(self._loop_movimiento())
+
+    async def _loop_movimiento(self):
+        try:
+            while self.movimiento_activo:
+                mover_dron(self.drone, self.movimiento_activo)
+                await asyncio.sleep(0.2)  # 200 ms entre comandos
+        except asyncio.CancelledError:
+            print("🛑 Movimiento continuo cancelado.")
+
+    def detener_movimiento(self):
+        print("⛔ Deteniendo movimiento")
+        self.movimiento_activo = None
 
     def test_motores(self):
         """Realiza un testeo de motores sin despegar el dron."""
@@ -206,63 +249,46 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
             else:
                 print("✅ GPS con señal suficiente para el vuelo.")
 
-    def despegue_controlado(self, altura_objetivo=1):
-        """Despega progresivamente sin usar MAV_CMD_NAV_TAKEOFF para evitar arranques bruscos."""
+    def despegue_controlado(self, altura_objetivo=3):
+        """Despega usando MAV_CMD_NAV_TAKEOFF (funciona en SITL)."""
         if self.drone:
-            print(f"🚀 Iniciando despegue controlado a {altura_objetivo} metros...")
+            print(f"🚀 Ejecutando despegue SITL a {altura_objetivo} metros...")
 
             try:
-                # ✅ Verificar si el dron está armado
+                # Asegurarse de que está armado
                 estado = self.drone.recv_match(type="HEARTBEAT", blocking=True, timeout=2)
                 armed = estado and (estado.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
-
                 if not armed:
                     print("⚠️ El dron no está armado. Armando automáticamente...")
                     self.armar_dron()
-                    asyncio.sleep(5)  # Esperar a que termine de armarse
+                    asyncio.sleep(5)
 
-                # ✅ Verificar señal GPS antes de despegar
-                gps_status = self.drone.recv_match(type="GPS_RAW_INT", blocking=True, timeout=2)
-                if not gps_status or gps_status.fix_type < 3:
-                    print("⚠️ Señal GPS insuficiente para despegar.")
-                    return
-
-                # ✅ Configurar modo GUIDED antes de despegar
+                # Cambiar a modo GUIDED
                 self.set_modo_guided()
+                asyncio.sleep(2)
 
-                # ✅ Aumento progresivo del throttle para evitar arranque brusco
-                print("⚙️ Aumentando potencia de motores gradualmente...")
-                throttle = 1100  # PWM inicial (necesario para iniciar motores)
-                max_throttle = 1350  # Ajustar según el peso del dron
+                # Enviar comando de despegue
+                self.drone.mav.command_long_send(
+                    self.drone.target_system,
+                    self.drone.target_component,
+                    mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+                    0,
+                    0, 0, 0, 0, 0, 0,  # Lat, Lon opcionales
+                    altura_objetivo  # Altitud objetivo
+                )
 
-                while throttle < max_throttle:
-                    for motor in range(1, 5):  # Asumiendo 4 motores
-                        self.drone.mav.command_long_send(
-                            self.drone.target_system,
-                            self.drone.target_component,
-                            mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-                            0,
-                            motor,  # Canal del motor
-                            throttle,  # PWM incrementado progresivamente
-                            0, 0, 0, 0, 0
-                        )
-                    throttle += 25  # Incremento gradual (ajustable)
-                    asyncio.sleep(0.5)  # Esperar antes del siguiente incremento
+                print("🛫 Comando de despegue enviado, esperando alcanzar altitud...")
 
-                print("✅ Potencia establecida, verificando altitud...")
-
-                # ✅ Monitorear la altitud en tiempo real para evitar sobre aceleración
+                # Esperar a alcanzar la altitud
                 while True:
                     estado = self.drone.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=1)
-                    if estado and estado.relative_alt >= (altura_objetivo * 1000):  # Factor de conversión de altitud
-                        print(f"✅ Altura objetivo alcanzada: {altura_objetivo}m")
+                    if estado and estado.relative_alt >= (altura_objetivo * 1000):  # en mm
+                        print(f"✅ Altura alcanzada: {estado.relative_alt / 1000}m")
                         break
                     asyncio.sleep(0.5)
 
-                print("🛑 Estabilizando en altura...")
-
             except Exception as e:
-                print(f"❌ Error durante el despegue controlado: {e}")
+                print(f"❌ Error durante el despegue: {e}")
 
     def despegar(self, altura=1):
         """Ejecuta el despegue controlado con ajuste progresivo de motores"""
@@ -321,6 +347,11 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
             )
 
     async def enviar_telemetria(self):
+        # Variables de umbrales
+        BAT_LOW_WARNING = 25  # %
+        BAT_LOW_CRITICAL = 15  # %
+        GPS_FIX_MIN = 3
+        SAT_MIN = 6
         """Envía datos de telemetría en tiempo real."""
         try:
             while self.running:
@@ -329,12 +360,56 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                     await self.close()
                     break
 
-                msg = await asyncio.to_thread(self.drone.recv_match, type=['ATTITUDE', 'GLOBAL_POSITION_INT', 'VFR_HUD', 'BATTERY_STATUS', 'SYS_STATUS', 'GPS_RAW_INT'], blocking=True, timeout=1)
+                msg = await asyncio.to_thread(self.drone.recv_match, 
+                                              type=['MISSION_ITEM_REACHED',
+                                                    'MISSION_CURRENT', 
+                                                    'ATTITUDE', 
+                                                    'GLOBAL_POSITION_INT', 
+                                                    'VFR_HUD', 
+                                                    'BATTERY_STATUS', 
+                                                    'SYS_STATUS',
+                                                    'HEARTBEAT', 
+                                                    'GPS_RAW_INT'],
+                                              blocking=True, 
+                                              timeout=1)
                 if msg:
                     #print(f"📡 Mensaje recibido: {msg}")  # LOG para verificar si llegan datos
+                    tipo = msg.get_type()
+                    #data de misiones para actualizar status en el frontend
+                    if tipo == 'MISSION_ITEM_REACHED':
+                        print(f"📍 Waypoint alcanzado: {msg.seq}")
+                        await self.send(json.dumps({"evento": "waypoint_alcanzado", "wp": msg.seq}))
 
+                        if hasattr(self, 'total_waypoints'):
+                            # Ahora contamos también el WP de aterrizaje
+                            if msg.seq == self.total_waypoints:  # último WP normal
+                                print("✅ Último waypoint alcanzado, esperando aterrizaje...")
+                            elif msg.seq >= self.total_waypoints + 1:  # se alcanzó WP de aterrizaje
+                                print("🏁 Misión finalizada (tras aterrizaje)")
+                                self.mision_en_curso = False
+                                await self.send(json.dumps({"status": "mision_finalizada"}))
+
+                    if self.mision_en_curso and tipo == "GLOBAL_POSITION_INT":
+                        altitud = getattr(msg, "relative_alt", 99999) / 1000
+                        if altitud < 1 and self.ultimo_modo in ["Land", "Auto"]:
+                            print("🏁 Aterrizaje completado al finalizar misión.")
+                            self.mision_en_curso = False
+                            await self.send(json.dumps({"status": "mision_finalizada"}))
+
+                    if tipo == 'MISSION_CURRENT':
+                        print(f"🔄 Waypoint actual: {msg.seq}")
+
+                    if tipo == "HEARTBEAT":
+                        modo_actual = self.get_flight_mode(msg)
+                        if modo_actual:
+                            print(f"🧭 Modo actual detectado: {modo_actual}")
+                            # Solo actualiza si es un modo distinto y válido
+                            if modo_actual != getattr(self, "ultimo_modo", None):
+                                self.ultimo_modo = modo_actual
+
+                    #telemetria general
                     data = {
-                        "tipo": msg.get_type(),
+                        "tipo": tipo,
                         "pitch": getattr(msg, "pitch", None),
                         "roll": getattr(msg, "roll", None),
                         "yaw": getattr(msg, "yaw", None),
@@ -347,10 +422,33 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                         "vz": getattr(msg, "vz", 0),
                         "bateria": getattr(msg, "battery_remaining", 0) if msg.get_type() in ["SYS_STATUS", "BATTERY_STATUS"] else None,
                         "voltaje": getattr(msg, "voltage_battery", 0) / 1000 if getattr(msg, "voltage_battery", None) else None,
-                        "modo": self.get_flight_mode(msg),
+                        "modo": getattr(self, "ultimo_modo", "Desconocido"),
                         "satellites": getattr(msg, "satellites_visible", None) if msg.get_type() == "GPS_RAW_INT" else None,
                         "gps_fix": getattr(msg, "fix_type", None) if msg.get_type() == "GPS_RAW_INT" else None,
                     }
+
+                     # 👇 Lógica de seguridad basada en batería
+                    if msg.get_type() in ["SYS_STATUS", "BATTERY_STATUS"]:
+                        battery = getattr(msg, "battery_remaining", None)
+                        if battery is not None:
+                            if battery < BAT_LOW_CRITICAL:
+                                print("🔴 Nivel de batería crítico. Ejecutando RTL.")
+                                self.regresar_home()
+                                await self.send(json.dumps({"alerta": "Batería crítica. Regresando a casa automáticamente."}))
+                            elif battery < BAT_LOW_WARNING:
+                                print("🟡 Nivel de batería bajo. Solicitando confirmación al usuario.")
+                                await self.send(json.dumps({"alerta": "Batería baja. ¿Deseas regresar a casa?", "accion_requerida": "confirmar_rtl"}))
+
+                     # 👇 Lógica de seguridad basada en señal GPS
+                    if msg.get_type() == "GPS_RAW_INT":
+                        gps_fix = getattr(msg, "fix_type", 0)
+                        satellites = getattr(msg, "satellites_visible", 0)
+                        if gps_fix < GPS_FIX_MIN or satellites < SAT_MIN:
+                            print("🟡 Señal GPS débil.")
+                            await self.send(json.dumps({
+                                "alerta": "Señal GPS débil. ¿Deseas continuar la misión?",
+                                "accion_requerida": "confirmar_continuar"
+                            }))
 
                     await self.send(json.dumps(data))  # Envía la telemetría al frontend
                     #print(f"✅ Enviando telemetría: {data}")  # LOG para confirmar envío de datos
@@ -367,8 +465,7 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
 
     def get_flight_mode(self, msg):
         """Devuelve el modo de vuelo actual si está disponible."""
-        if msg.get_type() == "HEARTBEAT":
-            flight_modes = {
+        flight_modes = {
                 0: "Manual",
                 1: "Circle",
                 2: "Stabilize",
@@ -378,13 +475,15 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                 6: "FBWB",
                 7: "Cruise",
                 8: "Autotune",
+                9: "Land",
                 10: "Auto",
                 11: "RTL",
                 12: "Loiter",
                 15: "Guided",
                 16: "Initialising",
-            }
-            return flight_modes.get(msg.custom_mode, "En sitio")
+        }
+        if msg.get_type() == "HEARTBEAT" and hasattr(msg, "custom_mode"):
+            return flight_modes.get(msg.custom_mode, f"Modo {msg.custom_mode}")
         return None
 
     async def disconnect(self, close_code):
