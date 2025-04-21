@@ -2,6 +2,24 @@ import asyncio
 import json
 from pymavlink import mavutil
 import time
+import math
+
+def calcular_yaw_entre_puntos(lat1, lon1, lat2, lon2):
+    """
+    Calcula el ángulo de orientación (yaw) desde el punto (lat1, lon1)
+    hacia el punto (lat2, lon2).
+    """
+    dlon = math.radians(lon2 - lon1)
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+
+    x = math.sin(dlon) * math.cos(lat2_rad)
+    y = math.cos(lat1_rad) * math.sin(lat2_rad) - \
+        math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(dlon)
+
+    initial_bearing = math.atan2(x, y)
+    bearing = (math.degrees(initial_bearing) + 360) % 360
+    return bearing
 
 
 def obtener_ruta(folio):
@@ -111,8 +129,10 @@ async def enviar_mision(drone, waypoints, altitud=5):
 
     # 6. Preparar misión
     print("📦 Preparando waypoints...")
+    yaw_inicial = calcular_yaw_entre_puntos(*waypoints[0], *waypoints[1])
     drone.waypoint_list = []
     for i, (lat, lon) in enumerate(waypoints):
+        yaw = yaw_inicial if i == 0 else 0 
         wp = drone.mav.mission_item_int_encode(
             drone.target_system,
             drone.target_component,
@@ -121,7 +141,7 @@ async def enviar_mision(drone, waypoints, altitud=5):
             mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
             1 if i == 0 else 0,
             1,
-            0, 0, 0, 0,
+            0, 0, yaw, 0,
             int(lat * 1e7),
             int(lon * 1e7),
             altitud
@@ -192,7 +212,7 @@ async def enviar_mision(drone, waypoints, altitud=5):
         drone.target_system,
         drone.target_component,
         mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-        0, 0, 0, 0, 0, 0, 0, altitud
+        0, 0, 0, 0, yaw_inicial, 0, 0, altitud
     )
     await asyncio.sleep(6)
 

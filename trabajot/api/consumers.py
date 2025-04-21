@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 from channels.generic.websocket import AsyncWebsocketConsumer
 from pymavlink import mavutil
 from api.mavlink_connection import get_drone_connection
@@ -23,6 +24,7 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
         self.movimiento_activo = None
         self.task_movimiento = None
         self.running = True
+        self.mision_en_curso = False
         self.telemetry_task = asyncio.create_task(self.enviar_telemetria())
 
     async def receive(self, text_data):
@@ -354,6 +356,9 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
         SAT_MIN = 6
         """Envía datos de telemetría en tiempo real."""
         try:
+            self.ultimo_modo = "Desconocido"
+            self.wp_final_alcanzado = False
+
             while self.running:
                 if self.drone is None:
                     print("❌ Conexión perdida con el dron. Deteniendo telemetría.")
@@ -375,44 +380,75 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                 if msg:
                     #print(f"📡 Mensaje recibido: {msg}")  # LOG para verificar si llegan datos
                     tipo = msg.get_type()
+
                     #data de misiones para actualizar status en el frontend
+                    
+                    # 1. Waypoint alcanzado
                     if tipo == 'MISSION_ITEM_REACHED':
                         print(f"📍 Waypoint alcanzado: {msg.seq}")
-                        await self.send(json.dumps({"evento": "waypoint_alcanzado", "wp": msg.seq}))
+                        await self.send(json.dumps({
+                            "evento": "waypoint_alcanzado",
+                            "wp": msg.seq
+                        }))
 
                         if hasattr(self, 'total_waypoints'):
-                            # Ahora contamos también el WP de aterrizaje
-                            if msg.seq == self.total_waypoints:  # último WP normal
-                                print("✅ Último waypoint alcanzado, esperando aterrizaje...")
-                            elif msg.seq >= self.total_waypoints + 1:  # se alcanzó WP de aterrizaje
-                                print("🏁 Misión finalizada (tras aterrizaje)")
+                            if msg.seq == self.total_waypoints - 1:  # El anterior al LAND
+                                print("🛬 Último waypoint alcanzado. Iniciando secuencia de aterrizaje...")
+                                self.wp_final_alcanzado = True
+                                await self.send(json.dumps({"status": "aterrizando"}))
+                            elif msg.seq >= self.total_waypoints:
+                                print("🏁 Misión finalizada tras último waypoint.")
                                 self.mision_en_curso = False
+                                self.wp_final_alcanzado = False
                                 await self.send(json.dumps({"status": "mision_finalizada"}))
 
+                    # 2. Detectar aterrizaje real
                     if self.mision_en_curso and tipo == "GLOBAL_POSITION_INT":
                         altitud = getattr(msg, "relative_alt", 99999) / 1000
-                        if altitud < 1 and self.ultimo_modo in ["Land", "Auto"]:
-                            print("🏁 Aterrizaje completado al finalizar misión.")
+                        # Detectar despegue (ej. si altitud sube por encima de 0.5 y aún no se ha notificado)
+                        if self.total_waypoints > 0 and self.ultimo_wp_actual == 0 and altitud > 0.5:
+                            print("🛫 Despegue detectado...")
+                            await self.send(json.dumps({
+                                "status": "despegando",
+                                "evento": "despegando"
+                            }))
+                        # Detectar aterrizaje tras misión
+                        if self.wp_final_alcanzado and altitud < 1:
+                            print("🏁 Dron aterrizó completamente tras misión.")
                             self.mision_en_curso = False
-                            await self.send(json.dumps({"status": "mision_finalizada"}))
-
+                            self.wp_final_alcanzado = False
+                            await self.send(json.dumps({
+                                "status": "mision_finalizada",
+                                "evento": "fin_mision"
+                            }))
+                    
+                    # 3. Waypoint actual (log)
                     if tipo == 'MISSION_CURRENT':
                         print(f"🔄 Waypoint actual: {msg.seq}")
+                        if hasattr(self, "ultimo_wp_actual") and self.ultimo_wp_actual == 0 and msg.seq == 1:
+                            print("🚀 El dron comenzó su misión tras el despegue.")
+                            await self.send(json.dumps({
+                                "evento": "iniciando_mision",
+                                "status": "iniciando"
+                            }))
+                        self.ultimo_wp_actual = msg.seq
 
                     if tipo == "HEARTBEAT":
                         modo_actual = self.get_flight_mode(msg)
                         if modo_actual:
-                            print(f"🧭 Modo actual detectado: {modo_actual}")
-                            # Solo actualiza si es un modo distinto y válido
-                            if modo_actual != getattr(self, "ultimo_modo", None):
-                                self.ultimo_modo = modo_actual
+                            #if modo_actual != self.ultimo_modo:
+                                #print(f"🧭 Modo actual detectado: {modo_actual}")
+                            self.ultimo_modo = modo_actual
+
+                    #if tipo == "ATTITUDE":
+                        #print(f"🎯 Yaw recibido: {msg.yaw}")
 
                     #telemetria general
                     data = {
                         "tipo": tipo,
                         "pitch": getattr(msg, "pitch", None),
                         "roll": getattr(msg, "roll", None),
-                        "yaw": getattr(msg, "yaw", None),
+                        "yaw": math.degrees(getattr(msg, "yaw", 0)) % 360 if msg.get_type() == "ATTITUDE" else None,
                         "lat": getattr(msg, "lat", None) / 1e7 if msg.get_type() == "GPS_RAW_INT" else None,
                         "lon": getattr(msg, "lon", None) / 1e7 if msg.get_type() == "GPS_RAW_INT" else None,
                         "alt": getattr(msg, "alt", None) / 1000 if msg.get_type() == "GPS_RAW_INT" else None,
@@ -422,7 +458,7 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                         "vz": getattr(msg, "vz", 0),
                         "bateria": getattr(msg, "battery_remaining", 0) if msg.get_type() in ["SYS_STATUS", "BATTERY_STATUS"] else None,
                         "voltaje": getattr(msg, "voltage_battery", 0) / 1000 if getattr(msg, "voltage_battery", None) else None,
-                        "modo": getattr(self, "ultimo_modo", "Desconocido"),
+                        "modo": self.ultimo_modo,
                         "satellites": getattr(msg, "satellites_visible", None) if msg.get_type() == "GPS_RAW_INT" else None,
                         "gps_fix": getattr(msg, "fix_type", None) if msg.get_type() == "GPS_RAW_INT" else None,
                     }
