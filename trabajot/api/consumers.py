@@ -51,8 +51,9 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                 self.detener_movimiento()
             elif command == "iniciar_mision":
                 folio_ruta = data.get("folio_ruta", 1)
-                print(f"🧭 Iniciando misión con folio {folio_ruta}...")
-                waypoints = await asyncio.to_thread(obtener_ruta, folio_ruta)
+                optimizar = data.get("optimizar", False)
+                print(f"🧭 Iniciando misión con folio {folio_ruta} | optimizar={optimizar}")
+                waypoints = await asyncio.to_thread(obtener_ruta, folio_ruta, optimizar)
                 if waypoints:
                     self.total_waypoints = len(waypoints)
                     self.mision_en_curso = True

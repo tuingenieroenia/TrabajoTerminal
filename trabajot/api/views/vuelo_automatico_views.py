@@ -5,6 +5,7 @@ from django.utils import timezone
 from api.models import RutasVuelo
 from api.serializers import RutasVueloSerializer
 import json
+from api.drone_commands.mission_manager import obtener_ruta
 
 # Coordenadas del punto "Home"
 HOME_COORDENADAS = {"lat": 19.512379, "lon": -99.127972, "alt": 5, "cmd": "HOME"}
@@ -14,6 +15,24 @@ def listar_rutas(request):
     rutas = RutasVuelo.objects.all()
     serializer = RutasVueloSerializer(rutas, many=True)
     return Response(serializer.data)
+
+@api_view(['GET'])
+def obtener_detalle_ruta(request, folio):
+    try:
+        # Ruta original (sin optimizar)
+        original = obtener_ruta(folio, optimizar=False)
+        optimizada = obtener_ruta(folio, optimizar=True)
+
+        original_json = [{"lat": lat, "lon": lon} for lat, lon in original]
+        optimizada_json = [{"lat": lat, "lon": lon} for lat, lon in optimizada]
+
+        return Response({
+            "original": original_json,
+            "optimizada": optimizada_json
+        })
+
+    except Exception as e:
+        return Response({"error": f"No se pudo obtener la ruta: {str(e)}"}, status=500)
 
 @api_view(['POST'])
 def guardar_ruta(request):

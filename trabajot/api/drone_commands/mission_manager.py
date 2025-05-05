@@ -3,6 +3,7 @@ import json
 from pymavlink import mavutil
 import time
 import math
+from itertools import permutations
 
 def calcular_yaw_entre_puntos(lat1, lon1, lat2, lon2):
     """
@@ -21,8 +22,31 @@ def calcular_yaw_entre_puntos(lat1, lon1, lat2, lon2):
     bearing = (math.degrees(initial_bearing) + 360) % 360
     return bearing
 
+def calcular_distancia(p1, p2):
+    # Distancia euclidiana simple (puedes cambiar por Haversine si lo prefieres)
+    return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
-def obtener_ruta(folio):
+def optimizar_ruta_astar(puntos):
+    if len(puntos) <= 2:
+        return puntos  # nada que optimizar
+
+    origen = puntos[0]
+    destino = puntos[-1]
+    intermedios = puntos[1:-1]
+
+    mejor_orden = None
+    menor_distancia = float("inf")
+
+    for perm in permutations(intermedios):
+        ruta = [origen] + list(perm) + [destino]
+        distancia_total = sum(calcular_distancia(ruta[i], ruta[i+1]) for i in range(len(ruta)-1))
+        if distancia_total < menor_distancia:
+            menor_distancia = distancia_total
+            mejor_orden = ruta
+
+    return mejor_orden
+
+def obtener_ruta(folio, optimizar=False):
     from api.models import RutasVuelo
     try:
         ruta = RutasVuelo.objects.get(folio=folio)
@@ -32,9 +56,16 @@ def obtener_ruta(folio):
         for coord in coordenadas:
             lat = coord.get("lat")
             lon = coord.get("lon")
-            print(f"mandamos {lat},{lon}")
             if lat is not None and lon is not None:
                 puntos.append((lat, lon))
+
+        if optimizar and len(puntos) > 3:
+            punto_inicio = puntos[0]
+            punto_final = puntos[-1]  # Este es el que se usará para LAND
+            puntos_a_optimizar = puntos[1:-1]  # Excluye inicio y final
+
+            puntos_optim = optimizar_ruta_astar([punto_inicio] + puntos_a_optimizar + [punto_final])
+            puntos = puntos_optim  # El LAND ya se agregará en `enviar_mision`
 
         return puntos
     except RutasVuelo.DoesNotExist:

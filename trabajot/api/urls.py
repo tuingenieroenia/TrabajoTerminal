@@ -25,6 +25,7 @@ urlpatterns = [
     # Vuelo automático (rutas predefinidas)
     path('rutas/', vuelo_automatico_views.listar_rutas, name='listar_rutas'),
     path('rutas/guardar/', vuelo_automatico_views.guardar_ruta, name='guardar_ruta'),
+    path('ruta-detalle/<int:folio>/', vuelo_automatico_views.obtener_detalle_ruta, name='detalle_ruta'),
     
     #Alertas o notificaciones de detección
     path('notifications/', notificaciones_view.NotificacionesListCreateAPIView.as_view(), name='notificaciones-list-create'),
