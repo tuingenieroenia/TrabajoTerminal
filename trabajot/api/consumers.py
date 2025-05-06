@@ -3,9 +3,10 @@ import json
 import math
 from channels.generic.websocket import AsyncWebsocketConsumer
 from pymavlink import mavutil
-from api.mavlink_connection import get_drone_connection
+from api.mavlink_connection import get_drone_connection, websocket_clients
 from api.drone_commands.manual_control import mover_dron
 from api.drone_commands.mission_manager import enviar_mision, obtener_ruta, establecer_home, validar_estado_para_mision
+from api.drone_commands.return_home import regresar_home_seguro
 
 class TelemetriaConsumer(AsyncWebsocketConsumer):
     
@@ -21,11 +22,46 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
 
+        websocket_clients.add(self)  # ✅ Añadir cliente a lista global
         self.movimiento_activo = None
         self.task_movimiento = None
         self.running = True
         self.mision_en_curso = False
-        self.telemetry_task = asyncio.create_task(self.enviar_telemetria())
+
+        if len(websocket_clients) == 1:
+            self.telemetry_task = asyncio.create_task(self.enviar_telemetria())
+        #self.telemetry_task = asyncio.create_task(self.enviar_telemetria())
+        await self.enviar_estado_inicial()
+
+    async def enviar_estado_inicial(self):
+        """Envía el estado actual del dron al cliente recién conectado."""
+        try:
+            print("📤 Enviando estado inicial al nuevo cliente...")
+
+            # Último modo
+            modo = self.ultimo_modo if hasattr(self, "ultimo_modo") else "Desconocido"
+
+            # Posición actual
+            posicion = self.drone.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=2)
+            alt_agl = posicion.relative_alt / 1000 if posicion else None
+
+            # Nivel de batería
+            bateria = self.drone.recv_match(type="SYS_STATUS", blocking=True, timeout=2)
+            nivel_bateria = bateria.battery_remaining if bateria else None
+
+            estado = {
+                "evento": "estado_inicial",
+                "modo": modo,
+                "alt_agl": alt_agl,
+                "bateria": nivel_bateria,
+                "status": "en_mision" if self.mision_en_curso else "en_estacion_base"
+            }
+
+            await self.send(json.dumps(estado))
+            print(f"✅ Estado inicial enviado: {estado}")
+
+        except Exception as e:
+            print(f"❌ Error al enviar estado inicial: {e}")
 
     async def receive(self, text_data):
         """Recibe comandos desde el frontend y los ejecuta en el dron."""
@@ -42,7 +78,13 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
             elif command == "despegar":
                 self.despegar()
             elif command == "regresar_home":
-                self.regresar_home()
+                exito = regresar_home_seguro(self.drone)
+                if exito:
+                    self.mision_en_curso = False
+                    await self.broadcast_to_clients({
+                        "evento": "rtl_iniciado",
+                        "status": "regresando_home"
+                    })
             elif command == "aterrizar":
                 self.aterrizar()
             elif command in ["adelante", "atras", "izquierda", "derecha", "subir", "bajar", "girar_izq", "girar_der"]:
@@ -61,9 +103,9 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                         enviar_mision(self.drone, waypoints, 5)
                     )
                 else:
-                    await self.send(json.dumps({"error": "No se pudo obtener la ruta"}))
+                    await self.broadcast_to_clients({"error": f"Error al ejecutar comando: {str(e)}"})
 
-            await self.send(json.dumps({"status": "Comando ejecutado", "command": command}))
+            await self.broadcast_to_clients({"status": "Comando ejecutado", "command": command})
 
         except Exception as e:
             print(f"❌ Error al procesar comando: {e}")
@@ -387,21 +429,21 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                     # 1. Waypoint alcanzado
                     if tipo == 'MISSION_ITEM_REACHED':
                         print(f"📍 Waypoint alcanzado: {msg.seq}")
-                        await self.send(json.dumps({
+                        await self.broadcast_to_clients({
                             "evento": "waypoint_alcanzado",
                             "wp": msg.seq
-                        }))
+                        })
 
                         if hasattr(self, 'total_waypoints'):
                             if msg.seq == self.total_waypoints - 1:  # El anterior al LAND
                                 print("🛬 Último waypoint alcanzado. Iniciando secuencia de aterrizaje...")
                                 self.wp_final_alcanzado = True
-                                await self.send(json.dumps({"status": "aterrizando"}))
+                                await self.broadcast_to_clients({"status": "aterrizando"})
                             elif msg.seq >= self.total_waypoints:
                                 print("🏁 Misión finalizada tras último waypoint.")
                                 self.mision_en_curso = False
                                 self.wp_final_alcanzado = False
-                                await self.send(json.dumps({"status": "mision_finalizada"}))
+                                await self.broadcast_to_clients({"status": "mision_finalizada"})
 
                     # 2. Detectar aterrizaje real
                     if self.mision_en_curso and tipo == "GLOBAL_POSITION_INT":
@@ -409,29 +451,29 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                         # Detectar despegue (ej. si altitud sube por encima de 0.5 y aún no se ha notificado)
                         if self.total_waypoints > 0 and self.ultimo_wp_actual == 0 and altitud > 0.5:
                             print("🛫 Despegue detectado...")
-                            await self.send(json.dumps({
+                            await self.broadcast_to_clients({
                                 "status": "despegando",
                                 "evento": "despegando"
-                            }))
+                            })
                         # Detectar aterrizaje tras misión
                         if self.wp_final_alcanzado and altitud < 1:
                             print("🏁 Dron aterrizó completamente tras misión.")
                             self.mision_en_curso = False
                             self.wp_final_alcanzado = False
-                            await self.send(json.dumps({
+                            await self.broadcast_to_clients({
                                 "status": "mision_finalizada",
                                 "evento": "fin_mision"
-                            }))
+                            })
                     
                     # 3. Waypoint actual (log)
                     if tipo == 'MISSION_CURRENT':
-                        print(f"🔄 Waypoint actual: {msg.seq}")
+                        #print(f"🔄 Waypoint actual: {msg.seq}")
                         if hasattr(self, "ultimo_wp_actual") and self.ultimo_wp_actual == 0 and msg.seq == 1:
                             print("🚀 El dron comenzó su misión tras el despegue.")
-                            await self.send(json.dumps({
+                            await self.broadcast_to_clients({
                                 "evento": "iniciando_mision",
                                 "status": "iniciando"
-                            }))
+                            })
                         self.ultimo_wp_actual = msg.seq
 
                     if tipo == "HEARTBEAT":
@@ -464,6 +506,28 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                         "gps_fix": getattr(msg, "fix_type", None) if msg.get_type() == "GPS_RAW_INT" else None,
                     }
 
+                    # 👉 Determinar tipo_operacion desde backend
+                    tipo_operacion = "Desconocido"
+                    if self.mision_en_curso:
+                        if self.wp_final_alcanzado:
+                            tipo_operacion = "Aterrizando..."
+                        elif getattr(self, "ultimo_wp_actual", 0) == 0:
+                            tipo_operacion = "Despegando..."
+                        else:
+                            tipo_operacion = "Automática"
+                    elif self.ultimo_modo in ["Guided", "Stabilize", "Loiter", "Manual", "Training"]:
+                        tipo_operacion = "Manual"
+                    elif self.ultimo_modo == "Auto":
+                        tipo_operacion = "Automática"
+                    elif self.ultimo_modo == "Land":
+                        tipo_operacion = "Aterrizando..."
+                    elif self.ultimo_modo == "RTL":
+                        tipo_operacion = "Retornando"
+                    else:
+                        tipo_operacion = "En estación base"
+
+                    data["tipo_operacion"] = tipo_operacion
+
                      # 👇 Lógica de seguridad basada en batería
                     if msg.get_type() in ["SYS_STATUS", "BATTERY_STATUS"]:
                         battery = getattr(msg, "battery_remaining", None)
@@ -471,10 +535,10 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                             if battery < BAT_LOW_CRITICAL:
                                 print("🔴 Nivel de batería crítico. Ejecutando RTL.")
                                 self.regresar_home()
-                                await self.send(json.dumps({"alerta": "Batería crítica. Regresando a casa automáticamente."}))
+                                await self.broadcast_to_clients({"alerta": "Batería crítica. Regresando a casa automáticamente."})
                             elif battery < BAT_LOW_WARNING:
                                 print("🟡 Nivel de batería bajo. Solicitando confirmación al usuario.")
-                                await self.send(json.dumps({"alerta": "Batería baja. ¿Deseas regresar a casa?", "accion_requerida": "confirmar_rtl"}))
+                                await self.broadcast_to_clients({"alerta": "Batería baja. ¿Deseas regresar a casa?", "accion_requerida": "confirmar_rtl"})
 
                      # 👇 Lógica de seguridad basada en señal GPS
                     if msg.get_type() == "GPS_RAW_INT":
@@ -482,12 +546,13 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
                         satellites = getattr(msg, "satellites_visible", 0)
                         if gps_fix < GPS_FIX_MIN or satellites < SAT_MIN:
                             print("🟡 Señal GPS débil.")
-                            await self.send(json.dumps({
+                            await self.broadcast_to_clients({
                                 "alerta": "Señal GPS débil. ¿Deseas continuar la misión?",
                                 "accion_requerida": "confirmar_continuar"
-                            }))
+                            })
 
-                    await self.send(json.dumps(data))  # Envía la telemetría al frontend
+
+                    await self.broadcast_to_clients(data)  # Envía la telemetría al frontend
                     #print(f"✅ Enviando telemetría: {data}")  # LOG para confirmar envío de datos
 
                 else:
@@ -523,15 +588,23 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
             return flight_modes.get(msg.custom_mode, f"Modo {msg.custom_mode}")
         return None
 
+    async def broadcast_to_clients(self, data):
+        for client in list(websocket_clients):
+            try:
+                await client.send(json.dumps(data))
+            except:
+                print("❌ Error al enviar a un cliente. Eliminando.")
+                websocket_clients.discard(client)
+
     async def disconnect(self, close_code):
         """Cierra la conexión de manera ordenada."""
         print(f"🔴 WebSocket desconectado: {close_code}")
-        self.running = False
-        if hasattr(self, "telemetry_task"):
+        websocket_clients.discard(self)
+
+        if not websocket_clients and hasattr(self, "telemetry_task"):
+            self.running = False
             self.telemetry_task.cancel()
             try:
                 await self.telemetry_task
             except asyncio.CancelledError:
                 pass
-        if hasattr(self, "drone"):
-            self.drone.close()

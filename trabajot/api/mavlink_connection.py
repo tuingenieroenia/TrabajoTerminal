@@ -2,6 +2,7 @@ from pymavlink import mavutil
 
 # Definir la variable global correctamente
 drone_connection = None
+websocket_clients = set()  # 🔗 Clientes WebSocket activos
 
 def get_drone_connection():
     """Retorna la conexión global al dron o la crea si no existe."""

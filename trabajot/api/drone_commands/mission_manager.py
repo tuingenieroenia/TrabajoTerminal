@@ -107,7 +107,7 @@ def validar_estado_para_mision(drone):
 
     return {"ok": True}
     
-async def enviar_mision(drone, waypoints, altitud=5):
+async def enviar_mision(drone, waypoints, altitud=5, reintento=False):
     if not drone or not waypoints:
         print("❌ Conexión al dron o waypoints no válidos.")
         return
@@ -234,7 +234,13 @@ async def enviar_mision(drone, waypoints, altitud=5):
     ack = drone.recv_match(type='MISSION_ACK', blocking=True, timeout=5)
     if not ack:
         print("❌ No se recibió MISSION_ACK.")
-        return
+        if not reintento:
+            print("🔁 Reintentando carga de misión una vez más...")
+            await asyncio.sleep(2)  # Pequeña pausa antes de reintentar
+            return await enviar_mision(drone, waypoints, altitud, reintento=True)
+        else:
+            print("❌ Reintento fallido. Cancelando misión.")
+            return
     print("✅ Misión cargada con éxito.")
 
     # 11. Despegue
