@@ -6,7 +6,6 @@ class Usuario(models.Model):
     nombre = models.CharField(max_length=255)
     apellidos = models.CharField(max_length=255)
     correo = models.EmailField(unique=True)
-    contrasena = models.CharField(max_length=255)
     class Meta:
         db_table = 'users'  # Asegura que use la tabla existente
 
@@ -60,6 +59,7 @@ class Notificaciones(models.Model):
     tipo = models.ForeignKey(TipoAlerta, on_delete=models.CASCADE, db_column='tipo')
     estado_confirmacion = models.ForeignKey(EstadoConfirmacion, on_delete=models.CASCADE, db_column='estado_confirmacion')
     folio_dron = models.ForeignKey(Dron, on_delete=models.CASCADE, db_column='folio_dron')
+    frame = models.CharField(max_length=255)
 
     class Meta:
         db_table = 'notificaciones'

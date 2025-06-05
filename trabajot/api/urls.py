@@ -1,7 +1,15 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import usuarios_views, drones_views, vuelo_manual_views, vuelo_automatico_views, notificaciones_view, tipo_alertas_view, estado_alerta_views
+from .views import (
+    usuarios_views, 
+    drones_views, 
+    vuelo_manual_views, 
+    vuelo_automatico_views, 
+    notificaciones_view, 
+    tipo_alertas_view, 
+    estado_alerta_views
+    )
 
 router = DefaultRouter()
 router.register(r'usuarios', usuarios_views.UsuarioViewSet)
@@ -11,7 +19,10 @@ urlpatterns = [
     path('', include(router.urls)),
     path('auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('auth/register/', usuarios_views.RegisterView.as_view(), name='register'),
+    
+    path('usuarios/', usuarios_views.UsuarioCreateAPIView.as_view(), name='usuario-create'),
+    path('usuarios/get/<str:correo>/', usuarios_views.UsuarioRetrieveByEmailAPIView.as_view(), name='usuario-detail'),
+    path('usuarios/<str:correo>/', usuarios_views.UsuarioUpdateByEmailAPIView.as_view(), name='usuario-update-by-email'),
 
     # CRUD de drones
     path('drones/registrar/', drones_views.registrar_dron, name='registrar_dron'),
@@ -29,7 +40,7 @@ urlpatterns = [
     
     #Alertas o notificaciones de detección
     path('notifications/', notificaciones_view.NotificacionesListCreateAPIView.as_view(), name='notificaciones-list-create'),
-    path('notifications/<int:folio>/actualizar-estado/', notificaciones_view.ActualizarEstadoConfirmacionAPIView.as_view(), name='actualizar-estado-notificacion'),
+    path('notifications/<int:folio>/actualizar-estado/', notificaciones_view.NotificacionEstadoUpdateAPIView.as_view(), name='actualizar-estado-notificacion'),
     
     #Tipos de alerta considerados
     path('tipo-alerta/', tipo_alertas_view.TipoAlertaListCreateAPIView.as_view(), name='tipo-alerta-list-create'),
