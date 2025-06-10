@@ -12,8 +12,8 @@ def get_drone_connection():
         try:
             print("🔄 Estableciendo conexión con el dron...")
             # Selecciona el tipo de conexión (SITL o real)
-            #drone_connection = mavutil.mavlink_connection("COM9", baud=57600)  # Para dron real
-            drone_connection = mavutil.mavlink_connection("tcp:127.0.0.1:5762")  # Para SITL
+            drone_connection = mavutil.mavlink_connection("COM5", baud=57600)  # Para dron real
+            #drone_connection = mavutil.mavlink_connection("tcp:127.0.0.1:5762")  # Para SITL
             # Esperar hasta recibir el heartbeat
             drone_connection.wait_heartbeat()
             print("✅ Conectado al dron")

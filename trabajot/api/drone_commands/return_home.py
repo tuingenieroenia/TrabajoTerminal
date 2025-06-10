@@ -1,45 +1,54 @@
 from pymavlink import mavutil
 import time
 
-def establecer_parametro(drone, nombre, valor):
-    """
-    Configura un parámetro en el dron.
-    """
-    print(f"🔧 Configurando {nombre} a {valor}...")
+def cambiar_a_loiter(drone):
+    print("📡 Forzando cambio a LOITER vía RC_OVERRIDE (modo extendido)...")
+
     try:
+        # NAV_FORCE_TERMINATION por seguridad
         drone.mav.param_set_send(
             drone.target_system,
             drone.target_component,
-            nombre.encode(),
-            float(valor),
-            mavutil.mavlink.MAV_PARAM_TYPE_REAL32
+            b"NAV_FORCE_TERMINATION",
+            1,
+            mavutil.mavlink.MAV_PARAM_TYPE_INT32
         )
-        print(f"✅ {nombre} configurado correctamente.")
-    except Exception as e:
-        print(f"❌ Error al configurar {nombre}: {e}")
+        time.sleep(1)
 
-def regresar_home_seguro(drone):
-    """
-    Ejecuta una secuencia segura para retornar al punto de inicio (RTL).
-    """
-    try:
-        print("🛑 Preparando regreso a casa...")
+        # Repetir RC_OVERRIDE para asegurar persistencia
+        print("🎮 Enviando override canal 5 (PWM 1300) múltiples veces...")
+        for _ in range(15):
+            drone.mav.rc_channels_override_send(
+                drone.target_system,
+                drone.target_component,
+                0, 0, 0, 0,
+                1300,  # Canal 5: modo LOITER
+                0, 0, 0
+            )
+            time.sleep(0.2)
 
-        # Configurar altitud de retorno y altitud final
-        establecer_parametro(drone, "RTL_ALT", 600)          # 6 metros en centímetros
-        establecer_parametro(drone, "RTL_ALT_FINAL", 0)      # 0 para aterrizar al llegar
+        # Confirmar modo
+        loiter_mode = drone.mode_mapping().get("LOITER")
+        for _ in range(6):
+            hb = drone.recv_match(type='HEARTBEAT', blocking=True, timeout=2)
+            if hb and getattr(hb, 'custom_mode', -1) == loiter_mode:
+                print("✅ Confirmado: modo actual es LOITER")
+                break
+            time.sleep(1)
+        else:
+            print("⚠️ No se confirmó el cambio a LOITER por override")
+            return False
 
-        # Enviar comando RTL directamente
-        drone.mav.command_long_send(
+        # Apagar override
+        print("🚫 Desactivando RC_OVERRIDE...")
+        drone.mav.rc_channels_override_send(
             drone.target_system,
             drone.target_component,
-            mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH,
             0, 0, 0, 0, 0, 0, 0, 0
         )
-        print("🏠 Comando RTL enviado.")
 
         return True
 
     except Exception as e:
-        print(f"❌ Error en regreso a casa seguro: {e}")
+        print(f"❌ Error durante el override extendido: {e}")
         return False
