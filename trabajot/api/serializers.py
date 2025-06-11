@@ -2,7 +2,6 @@ from rest_framework import serializers
 from .models import Usuario, Dron, RutasVuelo, Notificaciones, TipoAlerta, EstadoConfirmacion
 
 class UsuarioSerializer(serializers.ModelSerializer):
-    correo = serializers.EmailField(read_only=True)
     class Meta:
         model = Usuario
         fields = ['nombre', 'apellidos', 'correo']
