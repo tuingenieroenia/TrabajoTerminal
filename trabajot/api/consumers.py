@@ -6,7 +6,7 @@ from pymavlink import mavutil
 from api.mavlink_connection import get_drone_connection, websocket_clients
 from api.drone_commands.manual_control import mover_dron
 from api.drone_commands.mission_manager import enviar_mision, obtener_ruta, establecer_home, validar_estado_para_mision
-from api.drone_commands.return_home import regresar_home_seguro
+from api.drone_commands.return_home import cambiar_a_loiter
 
 class TelemetriaConsumer(AsyncWebsocketConsumer):
     
@@ -78,13 +78,27 @@ class TelemetriaConsumer(AsyncWebsocketConsumer):
             elif command == "despegar":
                 self.despegar()
             elif command == "regresar_home":
-                exito = regresar_home_seguro(self.drone)
-                if exito:
-                    self.mision_en_curso = False
-                    await self.broadcast_to_clients({
-                        "evento": "rtl_iniciado",
-                        "status": "regresando_home"
-                    })
+                try:
+                    success = cambiar_a_loiter(self.drone)
+                    if success:
+                        self.mision_en_curso = False  # 💥 Detener estado de misión
+                        await self.send(text_data=json.dumps({
+                            "evento": "estado",
+                            "valor": "En espera (LOITER)",
+                            "mensaje": "✅ Dron cambiado a modo LOITER."
+                        }))
+                    else:
+                        await self.send(text_data=json.dumps({
+                            "evento": "error",
+                            "valor": "No se pudo cambiar a LOITER",
+                            "mensaje": "❌ El dron no respondió al cambio de modo."
+                        }))
+                except Exception as e:
+                    await self.send(text_data=json.dumps({
+                        "evento": "error",
+                        "valor": "Error inesperado",
+                        "mensaje": f"❌ Ocurrió un error al cambiar a LOITER: {e}"
+                    }))
             elif command == "aterrizar":
                 self.aterrizar()
             elif command in ["adelante", "atras", "izquierda", "derecha", "subir", "bajar", "girar_izq", "girar_der"]:
